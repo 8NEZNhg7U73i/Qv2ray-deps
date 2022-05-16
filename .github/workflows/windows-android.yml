@@ -1,4 +1,4 @@
-name: Build Qv2ray deps for Android / Windows
+name: Build Qv2ray deps for Windows
 
 on:
   push:
@@ -9,28 +9,113 @@ jobs:
     strategy:
       matrix:
         package: [grpc, curl, openssl]
-        os: [windows, android]
+        os: [windows]
         arch: [arm, arm64, x86, x64]
-        exclude:
-          - os: windows
-            arch: arm
-          - os: windows
-            arch: arm64
-          - os: windows
-            arch: x86
         include:
           - os: windows
             osname: windows
             runon: windows-latest
-          - os: android
-            osname: linux
-            runon: ubuntu-latest
       fail-fast: false
       
     runs-on: ${{ matrix.runon }}
     
     steps:
-    - uses: actions/checkout@v2    
+    - name: create vdisk
+      #if: github.event_name == 'rase'
+      shell: cmd
+      run: |
+        echo rem > c:\disk
+        echo create vdisk file=C:\C.vhd maximum=87040 type=EXPANDABLE >> c:\disk
+        echo attach vdisk >> c:\disk
+        echo create vdisk file=D:\D.vhd maximum=10240 type=EXPANDABLE >> c:\disk
+        echo attach vdisk >> c:\disk
+        diskpart /s c:\disk
+
+    - name: create pool
+      shell: powershell
+      run: |
+        $WriteCacheSpace = 0.5
+        $SSDTierReseverDivisorBlock = 0
+        $HDDTierReseverDivisorBlock = 0
+        $HDD = get-physicaldisk | where physicallocation -eq "C:\C.vhd"
+        $SSD = get-physicaldisk | where physicallocation -eq "D:\D.vhd"
+        $HDDphy = $HDD | get-disk
+        $SSDphy = $SSD | get-disk
+        $HDD | Reset-PhysicalDisk
+        $SSD | Reset-PhysicalDisk
+        Write-Output "Create StoragePool"
+        $HDD = get-physicaldisk | where physicallocation -eq "C:\C.vhd"
+        $SSD = get-physicaldisk | where physicallocation -eq "D:\D.vhd"
+        #$vg = New-StoragePool -PhysicalDisks @($HDD , $SSD) -StorageSubSystemFriendlyName (Get-StorageSubSystem).FriendlyName -FriendlyName vg 
+        #-ResiliencySettingName Simple
+        $vg = New-StoragePool -FriendlyName vg -PhysicalDisks @($HDD , $SSD) -StorageSubSystemFriendlyName (Get-StorageSubSystem).FriendlyName #-WriteCacheSizeDefault 0
+        # -ResiliencySettingName Simple
+        $SSD | Set-PhysicalDisk -MediaType SSD
+        $HDD | Set-PhysicalDisk -MediaType HDD
+        $SSDTier = New-StorageTier -StoragePoolFriendlyName vg -FriendlyName SSDTier -MediaType SSD -ResiliencySettingName Simple
+        $HDDTier = New-StorageTier -StoragePoolFriendlyName vg -FriendlyName HDDTier -MediaType HDD -ResiliencySettingName Simple
+        $SSDTierSupportedSize = $SSDTier | Get-StorageTierSupportedSize
+        $HDDTierSupportedSize = $HDDTier | Get-StorageTierSupportedSize
+        $SSDTierDivisorBlockMax = [int64][math]::Floor( $($SSDTierSupportedSize.TierSizeMax) / $($SSDTierSupportedSize.TierSizeDivisor) )
+        $HDDTierDivisorBlockMax = [int64][math]::Floor( $($HDDTierSupportedSize.TierSizeMax) / $($HDDTierSupportedSize.TierSizeDivisor) )
+        #$SSDTierSize = [int64]( $($SSDTierSupportedSize.TierSizeMax) * $SSDTierSpace - $($SSDTierSupportedSize.TierSizeMax) * $SSDTierSpace % $($SSDTierSupportedSize.TierSizeDivisor) )
+        #$HDDTierSize = [int64]( $($HDDTierSupportedSize.TierSizeMax) * $HDDTierSpace - $($HDDTierSupportedSize.TierSizeMax) * $HDDTierSpace % $($HDDTierSupportedSize.TierSizeDivisor) )
+        $SSDTierDivisorBlock = ($SSDTierDivisorBlockMax - $SSDTierReseverDivisorBlock)
+        $HDDTierDivisorBlock = ($HDDTierDivisorBlockMax - $HDDTierReseverDivisorBlock)
+        $SSDTierSize = [int64]( $SSDTierDivisorBlock * $($SSDTierSupportedSize.TierSizeDivisor) )
+        $HDDTierSize = [int64]( $HDDTierDivisorBlock * $($HDDTierSupportedSize.TierSizeDivisor) )
+        #$SSDAllocated = [int64]$($SSD.allocatedSize)
+        #$HDDAllocated = [int64]$($HDD.allocatedSize)
+        $SSDRemain = [int64]( $($SSD.Size) - $($SSD.allocatedSize) )
+        $HDDRemain = [int64]( $($HDD.Size) - $($HDD.allocatedSize) )
+        $WriteCacheSize = [int64]( $($SSDTierSupportedSize.TierSizeMax) * $WriteCacheSpace )
+        Write-Output "DivisorSizes: ( $($SSDTierSupportedSize.TierSizeDivisor), $($HDDTierSupportedSize.TierSizeDivisor) )" 
+        Write-Output "TierSizeMax: ( $($SSDTierSupportedSize.TierSizeMax) , $($HDDTierSupportedSize.TierSizeMax) )"
+        #Write-Output "TierSizeMin: ( $($SSDTierSupportedSize.TierSizeMin) , $($HDDTierSupportedSize.TierSizeMin) )"
+        Write-Output "TierDivisorBlockMax: ( $SSDTierDivisorBlockMax , $HDDTierDivisorBlockMax )"
+        Write-Output "TierDivisorBlock: ( $SSDTierDivisorBlock , $HDDTierDivisorBlock )"
+        Write-Output "TierReseverDivisorBlock: ( $SSDTierReseverDivisorBlock , $HDDTierReseverDivisorBlock )"
+        Write-Output "TierSizes: ( $SSDTierSize , $HDDTierSize )"
+        Write-Output "DiskRemain: ( $SSDRemain , $HDDRemain )"
+        Write-Output "DiskAllocated: ( $($SSD.allocatedSize) , $($HDD.allocatedSize) )"
+        Write-Output "Create Virtualdisk"
+        $lv = $( New-VirtualDisk -StoragePoolFriendlyName vg -FriendlyName lv -StorageTiers @($SSDTier , $HDDTier) -StorageTierSizes @($SSDTierSize , $HDDTierSize) -ResiliencySettingName Simple -WriteCacheSize 0)
+        # -WriteCacheSize $WriteCacheSize
+        if ($lv -ne $null) {
+          $HDD = get-physicaldisk | where physicallocation -eq "C:\C.vhd"
+          $SSD = get-physicaldisk | where physicallocation -eq "D:\D.vhd"
+          $SSDRemain = [int64]( $($SSD.Size) - $($SSD.allocatedSize) )
+          $HDDRemain = [int64]( $($HDD.Size) - $($HDD.allocatedSize) )
+          Write-Output "DiskRemain: ( $SSDRemain, $HDDRemain )"
+          Write-Output "DiskAllocated: ( $($SSD.allocatedSize) , $($HDD.allocatedSize) )"
+          Get-VirtualDisk lv | Get-Disk | Initialize-Disk -PartitionStyle MBR -PassThru | New-Partition -DriveLetter Z -UseMaximumSize | Out-Null
+          Initialize-Volume -DriveLetter Z -FileSystem NTFS -Confirm:$false -NewFileSystemLabel TieredVolume | Out-Null
+        }
+
+    - name: make Junction target to the virtualdisk volume
+      if: github.event_name == 'rase'
+      shell: cmd
+      run: |
+          cd D:\
+          set dirname=${{ github.repository }}
+          for /F "tokens=2 delims=/" %%i in ("%dirname%") do (
+            set dirname=%%i
+          )
+          rmdir /s /q "D:\a\%dirname%"
+          mkdir "Z:\datadir"
+          mklink /D "D:\a\%dirname%" "Z:\datadir"
+          mkdir "D:\a\%dirname%\%dirname%"
+
+    - uses: actions/checkout@v2
+
+    - name: list something
+      shell: powershell
+      run: |
+        get-disk
+        get-physicalDisk
+        get-partition
+        get-volume
+
     - name: Install vcpkg
       shell: bash
       run: |
@@ -38,35 +123,9 @@ jobs:
         git clone https://github.com/microsoft/vcpkg
         ./vcpkg/bootstrap-vcpkg.sh
 
-    - name: Prepare Android protoc and grpc_cpp_plugin
-      if: matrix.package == 'grpc' && matrix.os == 'android'
-      shell: bash
-      run: |
-        cd vcpkg
-        ./vcpkg install grpc
-        mkdir -p ./installed/${{ matrix.arch }}-android/bin
-        cp ./installed/x64-linux/tools/protobuf/protoc ./installed/${{ matrix.arch }}-android/bin
-        cp ./installed/x64-linux/tools/grpc/grpc_cpp_plugin ./installed/${{ matrix.arch }}-android/bin
-    
-    - name: Prepare Android Triplet
-      if: matrix.os == 'android'
-      shell: bash
-      run: |
-        cd vcpkg
-        git apply -v ../0001_vcpkg_fix_curl_android_build.patch
-        mkdir -p ./triplets/community
-        echo "
-        set(VCPKG_TARGET_ARCHITECTURE ${{ matrix.arch }})
-        set(VCPKG_CRT_LINKAGE dynamic)
-        set(VCPKG_LIBRARY_LINKAGE static)
-        set(VCPKG_CMAKE_SYSTEM_NAME Android)
-        " | tee ./triplets/community/${{ matrix.arch }}-android.cmake
-        ls -lah ./triplets/community
-    
     - name: Install ${{ matrix.package }} on ${{ matrix.arch }}
       shell: bash
       run: |
-        export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk-bundle"
         ./vcpkg/vcpkg install ${{ matrix.package }}:${{ matrix.arch }}-${{ matrix.os }} --debug
       
     - name: Export Artifacts
@@ -82,53 +141,18 @@ jobs:
         path: ${{ matrix.package }}-${{ matrix.arch }}-${{ matrix.os }}.7z
         
     - name: Upload To Release
-      uses: svenstaro/upload-release-action@v1-release
+      uses: svenstaro/upload-release-action@master
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: ${{ matrix.package }}-${{ matrix.arch }}-${{ matrix.os }}.7z
         asset_name: ${{ matrix.package }}-${{ matrix.arch }}-${{ matrix.os }}.7z
         tag: release
         overwrite: true
-  build-tools:
-    runs-on: ubuntu-latest
-    name: Build grpc tools for android
-    steps:
-    - uses: actions/checkout@v2    
-    - name: Install vcpkg
-      shell: bash
+
+    - name: list something
+      shell: powershell
       run: |
-        set +e
-        git clone https://github.com/microsoft/vcpkg
-        ./vcpkg/bootstrap-vcpkg.sh
-
-    - name: Prepare gRPC
-      shell: bash
-      run: |
-        set +e
-        cd vcpkg
-        ./vcpkg install grpc
-
-    - name: Create Tools 7z
-      uses: DuckSoft/create-7z-action@v1.0
-      with:
-        pathSource: ./vcpkg/installed/x64-linux/tools
-        pathTarget: ./grpc-tools-linux.7z
-
-    - name: Upload Artifact
-      uses: actions/upload-artifact@master
-      with:
-        name: grpc-tools-linux.7z
-        path: grpc-tools-linux.7z
-        
-    - name: Upload To Release
-      uses: svenstaro/upload-release-action@v1-release
-      if: github.event_name == 'rase'
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: grpc-tools-linux.7z
-        asset_name: grpc-tools-linux.7z
-        tag: release
-        overwrite: true
-    
-    - name: Release
-      uses: softprops/action-gh-release@v1
+        get-disk
+        get-physicalDisk
+        get-partition
+        get-volume
