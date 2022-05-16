@@ -122,6 +122,7 @@ jobs:
         
     - name: Upload To Release
       uses: svenstaro/upload-release-action@v1-release
+      if: github.event_name == 'rase'
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
         file: grpc-tools-linux.7z
@@ -129,3 +130,5 @@ jobs:
         tag: release
         overwrite: true
     
+    - name: Release
+      uses: softprops/action-gh-release@v1
