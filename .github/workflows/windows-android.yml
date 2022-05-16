@@ -93,7 +93,6 @@ jobs:
         }
 
     - name: make Junction target to the virtualdisk volume
-      if: github.event_name == 'rase'
       shell: cmd
       run: |
           cd D:\
